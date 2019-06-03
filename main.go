@@ -20,6 +20,16 @@ import (
 	config "github.com/uber/jaeger-client-go/config"
 )
 
+var (
+	port   string
+	remote string
+)
+
+// Value is the payload that is used to exchange data
+type Value struct {
+	Value int64 `json:"value"`
+}
+
 // Init is used to intiantiate the opentracing tracer
 func Init(service string) (opentracing.Tracer, io.Closer) {
 	cfg := &config.Configuration{
@@ -31,23 +41,20 @@ func Init(service string) (opentracing.Tracer, io.Closer) {
 			LogSpans: true,
 		},
 	}
-	tracer, closer, err := cfg.New(service, config.Logger(jaeger.StdLogger))
+	tracer, closer, err := cfg.New(
+		service,
+		config.Logger(jaeger.StdLogger),
+	)
 	if err != nil {
-		panic(fmt.Sprintf("ERROR: cannot init Jaeger: %v\n", err))
+		panic(fmt.Sprintf(
+			"ERROR: cannot init Jaeger: %v\n",
+			err,
+		))
 	}
 	return tracer, closer
 }
 
-// Value is the payload that is used to exchange data
-type Value struct {
-	Value int64 `json:"value"`
-}
-
-var (
-	port   string
-	remote string
-)
-
+// call perform a remote call for values other than 1
 func call(ctx context.Context, i int64) int64 {
 	span := opentracing.SpanFromContext(ctx)
 	input := &Value{
@@ -80,7 +87,13 @@ func call(ctx context.Context, i int64) int64 {
 			if err := json.Unmarshal(body, &output); err == nil {
 				span.LogFields(
 					olog.String("event", "call-end"),
-					olog.String("logs", fmt.Sprintf("function previous call returned %d", output.Value)),
+					olog.String(
+						"logs",
+						fmt.Sprintf(
+							"function previous call returned %d",
+							output.Value,
+						),
+					),
 				)
 				return output.Value
 			}
@@ -89,9 +102,13 @@ func call(ctx context.Context, i int64) int64 {
 	return -1
 }
 
+// recurse is the handler that manages the application only route
 func recurse(w http.ResponseWriter, r *http.Request) {
 	tracer := opentracing.GlobalTracer()
-	spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(r.Header))
+	spanCtx, _ := tracer.Extract(
+		opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(r.Header),
+	)
 	span := tracer.StartSpan("recurse", ext.RPCServerOption(spanCtx))
 	defer span.Finish()
 	ctx := opentracing.ContextWithSpan(context.Background(), span)
@@ -115,16 +132,26 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 
-	flag.StringVar(&port, "port", "8000", "The default port for the application")
-	flag.StringVar(&remote, "remote", "http://localhost:8000", "The remote service location exposed on the outside")
+	flag.StringVar(
+		&port,
+		"port",
+		"8000",
+		"The default port for the application",
+	)
+	flag.StringVar(
+		&remote,
+		"remote",
+		"http://localhost:8000",
+		"The remote service location exposed on the outside",
+	)
 	flag.Parse()
-
-	r := mux.NewRouter()
-	r.HandleFunc("/", recurse)
 
 	tracer, closer := Init("recurse")
 	defer closer.Close()
 	opentracing.SetGlobalTracer(tracer)
+
+	r := mux.NewRouter()
+	r.HandleFunc("/", recurse)
 
 	srv := &http.Server{
 		Handler:      r,
@@ -134,5 +161,4 @@ func main() {
 	}
 
 	log.Fatal(srv.ListenAndServe())
-
 }
