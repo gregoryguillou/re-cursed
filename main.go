@@ -2,8 +2,8 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -15,10 +15,12 @@ import (
 	"github.com/gorilla/mux"
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
+	olog "github.com/opentracing/opentracing-go/log"
 	jaeger "github.com/uber/jaeger-client-go"
 	config "github.com/uber/jaeger-client-go/config"
 )
 
+// Init is used to intiantiate the opentracing tracer
 func Init(service string) (opentracing.Tracer, io.Closer) {
 	cfg := &config.Configuration{
 		Sampler: &config.SamplerConfig{
@@ -36,19 +38,29 @@ func Init(service string) (opentracing.Tracer, io.Closer) {
 	return tracer, closer
 }
 
+// Value is the payload that is used to exchange data
 type Value struct {
 	Value int64 `json:"value"`
 }
 
-func call(req *http.Request, ctx context.Context, i int64) int64 {
-	span, _ := opentracing.StartSpanFromContext(ctx, "call")
-    defer span.Finish()
+var (
+	port   string
+	remote string
+)
+
+func call(ctx context.Context, i int64) int64 {
+	span := opentracing.SpanFromContext(ctx)
 	input := &Value{
 		Value: i - 1,
 	}
 	var output Value
 	buf, _ := json.Marshal(input)
 	r := bytes.NewReader(buf)
+	req, err := http.NewRequest("POST", remote, r)
+	req.Header.Set("Content-Type", "application/json")
+	if err != nil {
+		panic(err.Error())
+	}
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, remote)
 	ext.HTTPMethod.Set(span, "POST")
@@ -57,9 +69,19 @@ func call(req *http.Request, ctx context.Context, i int64) int64 {
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(req.Header),
 	)
-	if resp, err := http.Post(remote, "application/json", r); err == nil {
+	span.SetTag("execute-for", i)
+	span.LogFields(
+		olog.String("event", "call-start"),
+		olog.String("logs", fmt.Sprintf("function call executed with %d", i)),
+	)
+	client := http.Client{}
+	if resp, err := client.Do(req); err == nil {
 		if body, err := ioutil.ReadAll(resp.Body); err == nil {
 			if err := json.Unmarshal(body, &output); err == nil {
+				span.LogFields(
+					olog.String("event", "call-end"),
+					olog.String("logs", fmt.Sprintf("function previous call returned %d", output.Value)),
+				)
 				return output.Value
 			}
 		}
@@ -72,7 +94,8 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 	spanCtx, _ := tracer.Extract(opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(r.Header))
 	span := tracer.StartSpan("recurse", ext.RPCServerOption(spanCtx))
 	defer span.Finish()
-    var input Value
+	ctx := opentracing.ContextWithSpan(context.Background(), span)
+	var input Value
 	output := &Value{
 		Value: 0,
 	}
@@ -80,7 +103,7 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(body, &input)
 		output.Value = 1
 		if input.Value > 1 {
-			output.Value = input.Value + call(r, context.Background(), input.Value)
+			output.Value = input.Value + call(ctx, input.Value)
 		}
 		result, _ := json.Marshal(output)
 		w.WriteHeader(http.StatusOK)
@@ -89,11 +112,6 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusInternalServerError)
 }
-
-var (
-	port   string
-	remote string
-)
 
 func main() {
 
@@ -104,7 +122,7 @@ func main() {
 	r := mux.NewRouter()
 	r.HandleFunc("/", recurse)
 
-	tracer, closer := Init("re-curse")
+	tracer, closer := Init("recurse")
 	defer closer.Close()
 	opentracing.SetGlobalTracer(tracer)
 
