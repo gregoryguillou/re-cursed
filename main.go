@@ -15,7 +15,7 @@ import (
 	"github.com/gorilla/mux"
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
-	olog "github.com/opentracing/opentracing-go/log"
+	jaegerlog "github.com/opentracing/opentracing-go/log"
 	jaeger "github.com/uber/jaeger-client-go"
 	config "github.com/uber/jaeger-client-go/config"
 )
@@ -38,7 +38,8 @@ func Init(service string) (opentracing.Tracer, io.Closer) {
 			Param: 1,
 		},
 		Reporter: &config.ReporterConfig{
-			LogSpans: true,
+			LogSpans:           true,
+			LocalAgentHostPort: "jaeger:6831",
 		},
 	}
 	tracer, closer, err := cfg.New(
@@ -78,16 +79,19 @@ func call(ctx context.Context, i int64) int64 {
 	)
 	span.SetTag("execute-for", i)
 	span.LogFields(
-		olog.String("event", "call-start"),
-		olog.String("logs", fmt.Sprintf("function call executed with %d", i)),
+		jaegerlog.String("event", "call-start"),
+		jaegerlog.String("logs", fmt.Sprintf("function call executed with %d", i)),
 	)
+	if i == 7 {
+		time.Sleep(2 * time.Second)
+	}
 	client := http.Client{}
 	if resp, err := client.Do(req); err == nil {
 		if body, err := ioutil.ReadAll(resp.Body); err == nil {
 			if err := json.Unmarshal(body, &output); err == nil {
 				span.LogFields(
-					olog.String("event", "call-end"),
-					olog.String(
+					jaegerlog.String("event", "call-end"),
+					jaegerlog.String(
 						"logs",
 						fmt.Sprintf(
 							"function previous call returned %d",
