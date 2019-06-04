@@ -15,9 +15,11 @@ import (
 	"github.com/gorilla/mux"
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
-	jaegerlog "github.com/opentracing/opentracing-go/log"
+	olog "github.com/opentracing/opentracing-go/log"
 	jaeger "github.com/uber/jaeger-client-go"
 	config "github.com/uber/jaeger-client-go/config"
+	jaegerlog "github.com/uber/jaeger-client-go/log"
+	metrics "github.com/uber/jaeger-lib/metrics"
 )
 
 var (
@@ -31,33 +33,34 @@ type Value struct {
 }
 
 // Init is used to intiantiate the opentracing tracer
-func Init(service string) (opentracing.Tracer, io.Closer) {
-	cfg := &config.Configuration{
+func Init(service string) io.Closer {
+	cfg := config.Configuration{
 		Sampler: &config.SamplerConfig{
-			Type:  "const",
+			Type:  jaeger.SamplerTypeConst,
 			Param: 1,
 		},
 		Reporter: &config.ReporterConfig{
-			LogSpans:           true,
+			LogSpans: true,
 			LocalAgentHostPort: "jaeger:6831",
 		},
 	}
-	tracer, closer, err := cfg.New(
+	jLogger := jaegerlog.StdLogger
+	jMetricsFactory := metrics.NullFactory
+
+	closer, err := cfg.InitGlobalTracer(
 		service,
-		config.Logger(jaeger.StdLogger),
+		config.Logger(jLogger),
+		config.Metrics(jMetricsFactory),
 	)
 	if err != nil {
-		panic(fmt.Sprintf(
-			"ERROR: cannot init Jaeger: %v\n",
-			err,
-		))
+		log.Printf("Could not initialize jaeger tracer: %s", err.Error())
+		return nil
 	}
-	return tracer, closer
+	return closer
 }
 
 // call perform a remote call for values other than 1
 func call(ctx context.Context, i int64) int64 {
-	span := opentracing.SpanFromContext(ctx)
 	input := &Value{
 		Value: i - 1,
 	}
@@ -69,6 +72,7 @@ func call(ctx context.Context, i int64) int64 {
 	if err != nil {
 		panic(err.Error())
 	}
+	span := opentracing.SpanFromContext(ctx)
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, remote)
 	ext.HTTPMethod.Set(span, "POST")
@@ -79,8 +83,8 @@ func call(ctx context.Context, i int64) int64 {
 	)
 	span.SetTag("execute-for", i)
 	span.LogFields(
-		jaegerlog.String("event", "call-start"),
-		jaegerlog.String("logs", fmt.Sprintf("function call executed with %d", i)),
+		olog.String("event", "call-start"),
+		olog.String("logs", fmt.Sprintf("function call executed with %d", i)),
 	)
 	if i == 7 {
 		time.Sleep(2 * time.Second)
@@ -90,8 +94,8 @@ func call(ctx context.Context, i int64) int64 {
 		if body, err := ioutil.ReadAll(resp.Body); err == nil {
 			if err := json.Unmarshal(body, &output); err == nil {
 				span.LogFields(
-					jaegerlog.String("event", "call-end"),
-					jaegerlog.String(
+					olog.String("event", "call-end"),
+					olog.String(
 						"logs",
 						fmt.Sprintf(
 							"function previous call returned %d",
@@ -150,9 +154,8 @@ func main() {
 	)
 	flag.Parse()
 
-	tracer, closer := Init("recurse")
+	closer := Init("recurse")
 	defer closer.Close()
-	opentracing.SetGlobalTracer(tracer)
 
 	r := mux.NewRouter()
 	r.HandleFunc("/", recurse)
