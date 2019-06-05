@@ -19,12 +19,14 @@ import (
 	jaeger "github.com/uber/jaeger-client-go"
 	config "github.com/uber/jaeger-client-go/config"
 	jaegerlog "github.com/uber/jaeger-client-go/log"
+	"github.com/uber/jaeger-client-go/zipkin"
 	metrics "github.com/uber/jaeger-lib/metrics"
 )
 
 var (
 	port   string
 	remote string
+	istio     bool
 )
 
 // Value is the payload that is used to exchange data
@@ -33,30 +35,61 @@ type Value struct {
 }
 
 // Init is used to intiantiate the opentracing tracer
-func Init(service string) io.Closer {
+func Init(service string) (closer io.Closer) {
 	cfg := config.Configuration{
 		Sampler: &config.SamplerConfig{
 			Type:  jaeger.SamplerTypeConst,
 			Param: 1,
 		},
-		Reporter: &config.ReporterConfig{
-			LogSpans: true,
+	}
+	if !istio {
+		cfg.Reporter = &config.ReporterConfig{
+			LogSpans:           true,
 			LocalAgentHostPort: "jaeger:6831",
-		},
+		}
 	}
 	jLogger := jaegerlog.StdLogger
 	jMetricsFactory := metrics.NullFactory
-
-	closer, err := cfg.InitGlobalTracer(
-		service,
-		config.Logger(jLogger),
-		config.Metrics(jMetricsFactory),
-	)
-	if err != nil {
-		log.Printf("Could not initialize jaeger tracer: %s", err.Error())
-		return nil
+	var err error
+	if !istio {
+		closer, err = cfg.InitGlobalTracer(
+			service,
+			config.Logger(jLogger),
+			config.Metrics(jMetricsFactory),
+		)
+		if err != nil {
+			log.Printf("Could not initialize Jaeger tracer: %s", err.Error())
+			return nil
+		}
+	} else {
+		zipkinPropagator := zipkin.NewZipkinB3HTTPHeaderPropagator()
+		closer, err = cfg.InitGlobalTracer(
+			service,
+			config.Logger(jLogger),
+			config.Metrics(jMetricsFactory),
+			config.Injector(opentracing.HTTPHeaders, zipkinPropagator),
+			config.Extractor(opentracing.HTTPHeaders, zipkinPropagator),
+			config.ZipkinSharedRPCSpan(true),
+		)
+		if err != nil {
+			log.Printf("Could not initialize zipkin tracer: %s", err.Error())
+			return nil
+		}
 	}
-	return closer
+	return
+}
+
+func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
+	span = opentracing.SpanFromContext(ctx)
+	ext.SpanKindRPCClient.Set(span)
+	ext.HTTPUrl.Set(span, req.URL.String())
+	ext.HTTPMethod.Set(span, req.Method)
+	span.Tracer().Inject(
+		span.Context(),
+		opentracing.HTTPHeaders,
+		opentracing.HTTPHeadersCarrier(req.Header),
+	)
+	return
 }
 
 // call perform a remote call for values other than 1
@@ -72,15 +105,7 @@ func call(ctx context.Context, i int64) int64 {
 	if err != nil {
 		panic(err.Error())
 	}
-	span := opentracing.SpanFromContext(ctx)
-	ext.SpanKindRPCClient.Set(span)
-	ext.HTTPUrl.Set(span, remote)
-	ext.HTTPMethod.Set(span, "POST")
-	span.Tracer().Inject(
-		span.Context(),
-		opentracing.HTTPHeaders,
-		opentracing.HTTPHeadersCarrier(req.Header),
-	)
+	span := injectSpan(ctx, req)
 	span.SetTag("execute-for", i)
 	span.LogFields(
 		olog.String("event", "call-start"),
@@ -110,16 +135,20 @@ func call(ctx context.Context, i int64) int64 {
 	return -1
 }
 
-// recurse is the handler that manages the application only route
-func recurse(w http.ResponseWriter, r *http.Request) {
+func extractSpan(r *http.Request) (span opentracing.Span) {
 	tracer := opentracing.GlobalTracer()
 	spanCtx, _ := tracer.Extract(
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(r.Header),
 	)
-	span := tracer.StartSpan("recurse", ext.RPCServerOption(spanCtx))
+	span = tracer.StartSpan("recurse", ext.RPCServerOption(spanCtx))
+	return
+}
+
+// recurse is the handler that manages the application only route
+func recurse(w http.ResponseWriter, r *http.Request) {
+	span := extractSpan(r)
 	defer span.Finish()
-	ctx := opentracing.ContextWithSpan(context.Background(), span)
 	var input Value
 	output := &Value{
 		Value: 0,
@@ -128,6 +157,7 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(body, &input)
 		output.Value = 1
 		if input.Value > 1 {
+			ctx := opentracing.ContextWithSpan(context.Background(), span)
 			output.Value = input.Value + call(ctx, input.Value)
 		}
 		result, _ := json.Marshal(output)
@@ -151,6 +181,11 @@ func main() {
 		"remote",
 		"http://localhost:8000",
 		"The remote service location exposed on the outside",
+	)
+	flag.BoolVar(&istio,
+		"istio",
+		false,
+		"Set Istio Envoy-based tracing, including Zipkin headers",
 	)
 	flag.Parse()
 
