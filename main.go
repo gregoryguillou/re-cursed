@@ -26,7 +26,7 @@ import (
 var (
 	port   string
 	remote string
-	istio     bool
+	istio  bool
 )
 
 // Value is the payload that is used to exchange data
@@ -43,6 +43,11 @@ func Init(service string) (closer io.Closer) {
 		},
 	}
 	if !istio {
+		cfg.Reporter = &config.ReporterConfig{
+			LogSpans:           true,
+			LocalAgentHostPort: "jaeger:6831",
+		}
+	} else {
 		cfg.Reporter = &config.ReporterConfig{
 			LogSpans:           true,
 			LocalAgentHostPort: "jaeger:6831",
@@ -80,7 +85,9 @@ func Init(service string) (closer io.Closer) {
 }
 
 func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
-	span = opentracing.SpanFromContext(ctx)
+	span = opentracing.StartSpan(
+		"rpc",
+		opentracing.ChildOf(opentracing.SpanFromContext(ctx).Context()))
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, req.URL.String())
 	ext.HTTPMethod.Set(span, req.Method)
@@ -89,6 +96,9 @@ func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) 
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(req.Header),
 	)
+	if istio && span.BaggageItem("x-request-id") != "" {
+		req.Header.Set("x-request-id", span.BaggageItem("x-request-id"))
+	}
 	return
 }
 
@@ -106,6 +116,7 @@ func call(ctx context.Context, i int64) int64 {
 		panic(err.Error())
 	}
 	span := injectSpan(ctx, req)
+	defer span.Finish()
 	span.SetTag("execute-for", i)
 	span.LogFields(
 		olog.String("event", "call-start"),
@@ -141,8 +152,21 @@ func extractSpan(r *http.Request) (span opentracing.Span) {
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(r.Header),
 	)
-	span = tracer.StartSpan("recurse", ext.RPCServerOption(spanCtx))
+	span = tracer.StartSpan("/root", ext.RPCServerOption(spanCtx))
+	if istio && r.Header.Get("x-request-id") != "" {
+		span.SetBaggageItem("x-request-id", r.Header.Get("x-request-id"))
+	}
 	return
+}
+
+func middlewareCaptureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Headers:")
+		for k, v := range r.Header {
+			fmt.Printf("%q: %q\n", k, v)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // recurse is the handler that manages the application only route
@@ -189,11 +213,11 @@ func main() {
 	)
 	flag.Parse()
 
-	closer := Init("recurse")
+	closer := Init("recursed")
 	defer closer.Close()
 
 	r := mux.NewRouter()
-	r.HandleFunc("/", recurse)
+	r.Handle("/", http.HandlerFunc(recurse))
 
 	srv := &http.Server{
 		Handler:      r,

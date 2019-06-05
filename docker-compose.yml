@@ -19,6 +19,5 @@ services:
       - 8000:8000
     command:
       - ./recursed
-      - -istio
     depends_on:
       - jaeger
