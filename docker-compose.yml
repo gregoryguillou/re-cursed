@@ -7,7 +7,7 @@ services:
       - 16686:16686
 
   recursed:
-    image: gregoryguillou/recursed:0.4.1
+    image: gregoryguillou/recursed:0.4.2
     environment:
       JAEGER_SERVICE_NAME: recurse
       JAEGER_AGENT_HOST: jaeger

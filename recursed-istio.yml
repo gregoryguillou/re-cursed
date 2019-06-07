@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
       - name: recursed
-        image: gregoryguillou/recursed:0.4.1
+        image: gregoryguillou/recursed:0.4.2
         command:
         - ./recursed
         - -istio
