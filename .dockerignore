@@ -1,0 +1,6 @@
+.gitignore
+.docker-compose.yml
+recursed
+jaeger-ui.png
+README.md
+recursed-istio.yml

@@ -25,6 +25,7 @@ import (
 )
 
 var (
+	debug  bool
 	port   string
 	remote string
 	istio  bool
@@ -166,9 +167,13 @@ func extractSpan(r *http.Request) (span opentracing.Span) {
 
 func middlewareCaptureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Println("Headers:")
-		for k, v := range r.Header {
-			fmt.Printf("%q: %q\n", k, v)
+		if debug {
+			fmt.Println("--------")
+			fmt.Println("Headers:")
+			for k, v := range r.Header {
+				fmt.Printf("%q: %q\n", k, v)
+			}
+			fmt.Println("--------")
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -216,13 +221,18 @@ func main() {
 		false,
 		"Set Istio Envoy-based tracing, including Zipkin headers",
 	)
+	flag.BoolVar(&debug,
+		"debug",
+		false,
+		"Display headers as part of the service logs",
+	)
 	flag.Parse()
 
 	closer := Init("recursed")
 	defer closer.Close()
 
 	r := mux.NewRouter()
-	r.Handle("/", http.HandlerFunc(recurse))
+	r.Handle("/", middlewareCaptureHeaders(http.HandlerFunc(recurse)))
 
 	srv := &http.Server{
 		Handler:      r,
