@@ -1,4 +1,4 @@
-module github.com/gregoryguillou/re-cursed
+module github.com/gregoryguillou/recursed
 
 go 1.12
 
