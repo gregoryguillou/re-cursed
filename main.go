@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +10,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -36,6 +36,9 @@ type Value struct {
 	Value int64 `json:"value"`
 }
 
+// RequestHeader can be used to get X-Request-Id from request in Istio
+type RequestHeader string
+
 // Init is used to intiantiate the opentracing tracer
 func Init(service string) (closer io.Closer) {
 	cfg := config.Configuration{
@@ -45,10 +48,14 @@ func Init(service string) (closer io.Closer) {
 		},
 	}
 	agentPort := os.Getenv("JAEGER_AGENT_PORT")
-	if agentPort == "" { agentPort = "6831" }
+	if agentPort == "" {
+		agentPort = "6831"
+	}
 	agentHost := os.Getenv("JAEGER_AGENT_HOST")
-	if agentHost == "" { agentHost = "localhost" }
-    log.Printf("Configuring for istio: %t...", istio)
+	if agentHost == "" {
+		agentHost = "localhost"
+	}
+	log.Printf("Configuring for istio: %t...", istio)
 	if !istio {
 		cfg.Reporter = &config.ReporterConfig{
 			LogSpans:           true,
@@ -56,7 +63,7 @@ func Init(service string) (closer io.Closer) {
 		}
 	} else {
 		cfg.Reporter = &config.ReporterConfig{
-			LogSpans:           true,
+			LogSpans: true,
 		}
 	}
 	jLogger := jaegerlog.StdLogger
@@ -91,7 +98,11 @@ func Init(service string) (closer io.Closer) {
 }
 
 func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
+	requestID := ctx.Value(RequestHeader("x-request-id")).(string)
 	span = opentracing.SpanFromContext(ctx)
+	if debug { 
+		fmt.Printf("X-Request-ID (internal): %s\n", requestID)
+	}
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, req.URL.String())
 	ext.HTTPMethod.Set(span, req.Method)
@@ -100,8 +111,8 @@ func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) 
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(req.Header),
 	)
-	if istio && span.BaggageItem("x-request-id") != "" {
-		req.Header.Set("x-request-id", span.BaggageItem("x-request-id"))
+	if istio && requestID != "" {
+		req.Header.Set("x-request-id", requestID)
 	}
 	return
 }
@@ -156,9 +167,6 @@ func extractSpan(r *http.Request) (span opentracing.Span) {
 		opentracing.HTTPHeadersCarrier(r.Header),
 	)
 	span = tracer.StartSpan("/root", ext.RPCServerOption(spanCtx))
-	if istio && r.Header.Get("x-request-id") != "" {
-		span.SetBaggageItem("x-request-id", r.Header.Get("x-request-id"))
-	}
 	return
 }
 
@@ -189,6 +197,10 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 		output.Value = 1
 		if input.Value > 1 {
 			ctx := opentracing.ContextWithSpan(context.Background(), span)
+			requestID := r.Header.Get("x-request-id")
+			if istio && requestID != "" {
+				ctx = context.WithValue(ctx, RequestHeader("x-request-id"), requestID)
+			}
 			output.Value = input.Value + call(ctx, input.Value)
 		}
 		result, _ := json.Marshal(output)
