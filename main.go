@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -42,15 +43,19 @@ func Init(service string) (closer io.Closer) {
 			Param: 1,
 		},
 	}
+	agentPort := os.Getenv("JAEGER_AGENT_PORT")
+	if agentPort == "" { agentPort = "6831" }
+	agentHost := os.Getenv("JAEGER_AGENT_HOST")
+	if agentHost == "" { agentHost = "localhost" }
+    log.Printf("Configuring for istio: %t...", istio)
 	if !istio {
 		cfg.Reporter = &config.ReporterConfig{
 			LogSpans:           true,
-			LocalAgentHostPort: "jaeger:6831",
+			LocalAgentHostPort: fmt.Sprintf("%s:%s", agentHost, agentPort),
 		}
 	} else {
 		cfg.Reporter = &config.ReporterConfig{
 			LogSpans:           true,
-			LocalAgentHostPort: "jaeger:6831",
 		}
 	}
 	jLogger := jaegerlog.StdLogger
