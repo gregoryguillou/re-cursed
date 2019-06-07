@@ -7,7 +7,7 @@ services:
       - 16686:16686
 
   recursed:
-    image: gregoryguillou/recursed:0.2.0
+    image: gregoryguillou/recursed:0.3.0
     environment:
       JAEGER_SERVICE_NAME: recurse
       JAEGER_AGENT_HOST: jaeger
@@ -17,5 +17,7 @@ services:
       JAEGER_REPORTER_LOG_SPANS: "true"
     ports:
       - 8000:8000
+    command:
+      - ./recursed
     depends_on:
       - jaeger
