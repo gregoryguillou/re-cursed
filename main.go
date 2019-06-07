@@ -91,9 +91,7 @@ func Init(service string) (closer io.Closer) {
 }
 
 func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
-	span = opentracing.StartSpan(
-		"rpc",
-		opentracing.ChildOf(opentracing.SpanFromContext(ctx).Context()))
+	span = opentracing.SpanFromContext(ctx)
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, req.URL.String())
 	ext.HTTPMethod.Set(span, req.Method)
@@ -122,7 +120,6 @@ func call(ctx context.Context, i int64) int64 {
 		panic(err.Error())
 	}
 	span := injectSpan(ctx, req)
-	defer span.Finish()
 	span.SetTag("execute-for", i)
 	span.LogFields(
 		olog.String("event", "call-start"),
