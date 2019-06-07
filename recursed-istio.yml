@@ -33,6 +33,7 @@ spec:
         - -istio
         - -remote
         - http://recursed.default.svc.cluster.local:8000
+        - -debug
         resources:
           requests:
             cpu: "100m"
