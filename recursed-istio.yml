@@ -27,13 +27,12 @@ spec:
     spec:
       containers:
       - name: recursed
-        image: gregoryguillou/recursed:0.4.3
+        image: gregoryguillou/recursed:0.5.0
         command:
         - ./recursed
         - -istio
         - -remote
-        - http://recursed.default.svc.cluster.local:8000
-        - -debug
+        - http://recursed:8000
         resources:
           requests:
             cpu: "100m"
