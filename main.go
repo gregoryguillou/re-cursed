@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,8 +10,10 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/gorilla/handlers"
 	"github.com/gorilla/mux"
 	opentracing "github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
@@ -25,16 +26,19 @@ import (
 )
 
 var (
-	debug  bool
-	port   string
-	remote string
-	istio  bool
+	logHeaders bool
+	port       string
+	remote     string
+	istio      bool
 )
 
 // Value is the payload that is used to exchange data
 type Value struct {
 	Value int64 `json:"value"`
 }
+
+// RequestHeader can be used to get X-Request-Id from request in Istio
+type RequestHeader string
 
 // Init is used to intiantiate the opentracing tracer
 func Init(service string) (closer io.Closer) {
@@ -43,54 +47,45 @@ func Init(service string) (closer io.Closer) {
 			Type:  jaeger.SamplerTypeConst,
 			Param: 1,
 		},
-	}
-	agentPort := os.Getenv("JAEGER_AGENT_PORT")
-	if agentPort == "" { agentPort = "6831" }
-	agentHost := os.Getenv("JAEGER_AGENT_HOST")
-	if agentHost == "" { agentHost = "localhost" }
-    log.Printf("Configuring for istio: %t...", istio)
-	if !istio {
-		cfg.Reporter = &config.ReporterConfig{
+		Reporter: &config.ReporterConfig{
 			LogSpans:           true,
-			LocalAgentHostPort: fmt.Sprintf("%s:%s", agentHost, agentPort),
-		}
-	} else {
-		cfg.Reporter = &config.ReporterConfig{
-			LogSpans:           true,
-		}
+			LocalAgentHostPort: "jaeger:6831",
+		},
 	}
-	jLogger := jaegerlog.StdLogger
-	jMetricsFactory := metrics.NullFactory
 	var err error
 	if !istio {
 		closer, err = cfg.InitGlobalTracer(
 			service,
-			config.Logger(jLogger),
-			config.Metrics(jMetricsFactory),
+			config.Logger(jaegerlog.StdLogger),
+			config.Metrics(metrics.NullFactory),
 		)
 		if err != nil {
-			log.Printf("Could not initialize Jaeger tracer: %s", err.Error())
-			return nil
+			log.Fatalf("Could not initialize Jaeger tracer: %s", err.Error())
 		}
-	} else {
-		zipkinPropagator := zipkin.NewZipkinB3HTTPHeaderPropagator()
-		closer, err = cfg.InitGlobalTracer(
-			service,
-			config.Logger(jLogger),
-			config.Metrics(jMetricsFactory),
-			config.Injector(opentracing.HTTPHeaders, zipkinPropagator),
-			config.Extractor(opentracing.HTTPHeaders, zipkinPropagator),
-			config.ZipkinSharedRPCSpan(true),
-		)
-		if err != nil {
-			log.Printf("Could not initialize zipkin tracer: %s", err.Error())
-			return nil
-		}
+		return
+	}
+
+	zipkinPropagator := zipkin.NewZipkinB3HTTPHeaderPropagator()
+	closer, err = cfg.InitGlobalTracer(
+		service,
+		config.Logger(jaegerlog.StdLogger),
+		config.Metrics(metrics.NullFactory),
+		config.Injector(opentracing.HTTPHeaders, zipkinPropagator),
+		config.Extractor(opentracing.HTTPHeaders, zipkinPropagator),
+		config.ZipkinSharedRPCSpan(true),
+		config.Reporter(jaeger.NewNullReporter()),
+	)
+	if err != nil {
+		log.Fatalf("Could not initialize Zipkin tracer: %s", err.Error())
 	}
 	return
 }
 
 func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
+	if istio && ctx.Value(RequestHeader("x-request-id")) != nil {
+		requestID := ctx.Value(RequestHeader("x-request-id")).(string)
+		req.Header.Set("x-request-id", requestID)
+	}
 	span = opentracing.SpanFromContext(ctx)
 	ext.SpanKindRPCClient.Set(span)
 	ext.HTTPUrl.Set(span, req.URL.String())
@@ -100,9 +95,6 @@ func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) 
 		opentracing.HTTPHeaders,
 		opentracing.HTTPHeadersCarrier(req.Header),
 	)
-	if istio && span.BaggageItem("x-request-id") != "" {
-		req.Header.Set("x-request-id", span.BaggageItem("x-request-id"))
-	}
 	return
 }
 
@@ -156,16 +148,12 @@ func extractSpan(r *http.Request) (span opentracing.Span) {
 		opentracing.HTTPHeadersCarrier(r.Header),
 	)
 	span = tracer.StartSpan("/root", ext.RPCServerOption(spanCtx))
-	if istio && r.Header.Get("x-request-id") != "" {
-		span.SetBaggageItem("x-request-id", r.Header.Get("x-request-id"))
-	}
 	return
 }
 
 func middlewareCaptureHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if debug {
-			fmt.Println("--------")
+		if logHeaders {
 			fmt.Println("Headers:")
 			for k, v := range r.Header {
 				fmt.Printf("%q: %q\n", k, v)
@@ -189,6 +177,10 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 		output.Value = 1
 		if input.Value > 1 {
 			ctx := opentracing.ContextWithSpan(context.Background(), span)
+			requestID := r.Header.Get("x-request-id")
+			if istio && requestID != "" {
+				ctx = context.WithValue(ctx, RequestHeader("x-request-id"), requestID)
+			}
 			output.Value = input.Value + call(ctx, input.Value)
 		}
 		result, _ := json.Marshal(output)
@@ -218,8 +210,8 @@ func main() {
 		false,
 		"Set Istio Envoy-based tracing, including Zipkin headers",
 	)
-	flag.BoolVar(&debug,
-		"debug",
+	flag.BoolVar(&logHeaders,
+		"log-headers",
 		false,
 		"Display headers as part of the service logs",
 	)
@@ -229,7 +221,11 @@ func main() {
 	defer closer.Close()
 
 	r := mux.NewRouter()
-	r.Handle("/", middlewareCaptureHeaders(http.HandlerFunc(recurse)))
+	r.Handle("/", middlewareCaptureHeaders(
+		handlers.LoggingHandler(
+			os.Stdout,
+			http.HandlerFunc(recurse),
+		)))
 
 	srv := &http.Server{
 		Handler:      r,
@@ -237,6 +233,6 @@ func main() {
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
-
+	log.Printf("Starting on %s\n", srv.Addr)
 	log.Fatal(srv.ListenAndServe())
 }
