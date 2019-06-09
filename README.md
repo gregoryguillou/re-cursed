@@ -69,4 +69,14 @@ kubectl port-forward -n istio-system \
 ![Jaeger on Istio UI](istio-ui.png)
 
 > Note: In order for Jaeger to work, you should first have a service and a pod
-> running with Istio so that Pilot can be started.
+> running with Istio so that Pilot can be started and configure the OpenTracing
+> service based on the feedback it gets. You will not be able to access Jaeger
+> and will get errors like the ones below before you start an application in
+> Istio:
+
+```text
+[2023-06-06 07:14:07.567][13][warning][config] [bazel-out/k8-opt/bin/external/envoy/source/common/config/_virtual_includes/grpc_stream_lib/common/config/grpc_stream.h:86] gRPC config stream closed: 14, upstream connect error or disconnect/reset before headers. reset reason: connection failure
+2023-06-06T07:14:09.419199Z	info	Envoy proxy is NOT ready: config not received from Pilot (is Pilot running?): cds updates: 0 successful, 0 rejected; lds updates: 0 successful, 0 rejected
+[...]
+```
+

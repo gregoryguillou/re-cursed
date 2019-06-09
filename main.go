@@ -60,7 +60,10 @@ func Init(service string) (closer io.Closer) {
 			config.Metrics(metrics.NullFactory),
 		)
 		if err != nil {
-			log.Fatalf("Could not initialize Jaeger tracer: %s", err.Error())
+			log.Fatalf(
+				"Could not initialize Jaeger tracer: %s",
+				err.Error(),
+			)
 		}
 		return
 	}
@@ -81,9 +84,17 @@ func Init(service string) (closer io.Closer) {
 	return
 }
 
-func injectSpan(ctx context.Context, req *http.Request) (span opentracing.Span) {
-	if istio && ctx.Value(RequestHeader("x-request-id")) != nil {
-		requestID := ctx.Value(RequestHeader("x-request-id")).(string)
+func injectSpan(
+	ctx context.Context,
+	req *http.Request,
+) (span opentracing.Span) {
+	if istio &&
+		ctx.Value(
+			RequestHeader("x-request-id"),
+		) != nil {
+		requestID := ctx.Value(
+			RequestHeader("x-request-id"),
+		).(string)
 		req.Header.Set("x-request-id", requestID)
 	}
 	span = opentracing.SpanFromContext(ctx)
@@ -115,7 +126,10 @@ func call(ctx context.Context, i int64) int64 {
 	span.SetTag("execute-for", i)
 	span.LogFields(
 		olog.String("event", "call-start"),
-		olog.String("logs", fmt.Sprintf("function call executed with %d", i)),
+		olog.String(
+			"logs",
+			fmt.Sprintf("function call executed with %d", i),
+		),
 	)
 	if i == 7 {
 		time.Sleep(2 * time.Second)
@@ -152,16 +166,17 @@ func extractSpan(r *http.Request) (span opentracing.Span) {
 }
 
 func middlewareCaptureHeaders(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if logHeaders {
-			fmt.Println("Headers:")
-			for k, v := range r.Header {
-				fmt.Printf("%q: %q\n", k, v)
+	return http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if logHeaders {
+				fmt.Println("Headers:")
+				for k, v := range r.Header {
+					fmt.Printf("%q: %q\n", k, v)
+				}
+				fmt.Println("--------")
 			}
-			fmt.Println("--------")
-		}
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
 }
 
 // recurse is the handler that manages the application only route
@@ -176,10 +191,17 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal(body, &input)
 		output.Value = 1
 		if input.Value > 1 {
-			ctx := opentracing.ContextWithSpan(context.Background(), span)
+			ctx := opentracing.ContextWithSpan(
+				context.Background(),
+				span,
+			)
 			requestID := r.Header.Get("x-request-id")
 			if istio && requestID != "" {
-				ctx = context.WithValue(ctx, RequestHeader("x-request-id"), requestID)
+				ctx = context.WithValue(
+					ctx,
+					RequestHeader("x-request-id"),
+					requestID,
+				)
 			}
 			output.Value = input.Value + call(ctx, input.Value)
 		}
