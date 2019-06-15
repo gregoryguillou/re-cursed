@@ -26,10 +26,12 @@ import (
 )
 
 var (
+	delay      int64
+	istio      bool
 	logHeaders bool
 	port       string
 	remote     string
-	istio      bool
+	version    string
 )
 
 // Value is the payload that is used to exchange data
@@ -179,7 +181,7 @@ func middlewareCaptureHeaders(next http.Handler) http.Handler {
 		})
 }
 
-// recurse is the handler that manages the application only route
+// recurse is the handler that manages the application root route
 func recurse(w http.ResponseWriter, r *http.Request) {
 	span := extractSpan(r)
 	defer span.Finish()
@@ -213,8 +215,37 @@ func recurse(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusInternalServerError)
 }
 
+// hello is the handler that manages the application /hello route
+func hello(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	span := extractSpan(r)
+	defer span.Finish()
+	time.Sleep(time.Duration(delay * 1000000))
+	host, _ := os.Hostname()
+	delay := time.Since(start).Nanoseconds() / 1000000
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "{\"hostname\": \"%s\", \"delay\": %d, \"version\": \"%s\"}\n", host, delay, version)
+	return
+}
+
 func main() {
 
+	flag.Int64Var(
+		&delay,
+		"delay",
+		0,
+		"The delay for the /hello route in milliseconds",
+	)
+	flag.BoolVar(&istio,
+		"istio",
+		false,
+		"Set Istio Envoy-based tracing, including Zipkin headers",
+	)
+	flag.BoolVar(&logHeaders,
+		"log-headers",
+		false,
+		"Display headers as part of the service logs",
+	)
 	flag.StringVar(
 		&port,
 		"port",
@@ -227,17 +258,13 @@ func main() {
 		"http://localhost:8000",
 		"The remote service location exposed on the outside",
 	)
-	flag.BoolVar(&istio,
-		"istio",
-		false,
-		"Set Istio Envoy-based tracing, including Zipkin headers",
+	flag.StringVar(
+		&version,
+		"version",
+		"v1",
+		"The application version (default: v1)",
 	)
-	flag.BoolVar(&logHeaders,
-		"log-headers",
-		false,
-		"Display headers as part of the service logs",
-	)
-	flag.Parse()
+	flag.Parse()	
 
 	closer := Init("recursed")
 	defer closer.Close()
@@ -248,6 +275,11 @@ func main() {
 			os.Stdout,
 			http.HandlerFunc(recurse),
 		)))
+	r.Handle("/hello",
+		handlers.LoggingHandler(
+			os.Stdout,
+			http.HandlerFunc(hello),
+		))
 
 	srv := &http.Server{
 		Handler:      r,
